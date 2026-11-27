@@ -42,21 +42,18 @@ function of the input bytes, so two runs produce byte-identical outputs.
 
 ## Practice-set result
 
-Official kit scorer on the practice set: **743,120** total (all 8 answered,
-all pixel-exact), about 52 s for the whole run on this machine
-(the kit's reference CPU is faster than this VM, so the graded run should
-be comfortably inside the 60 s limit).
+Official kit scorer on the practice set: **735,074** total (all 8 answered, all pixel-exact), about 26 s for the whole run on this machine — resubmitted 27/11 after the first entry timed out in dev grading at ~50 s; the runtime was halved to fit the 60 s grade wall.
 
 | instance | bytes | score |
 | --- | --- | --- |
-| i001 | 11,602 | 762.4 |
-| i002 | 48,248 | 749.2 |
-| i003 | 98,967 | 721.8 |
-| i004 | 100,608 | 726.5 |
-| i005 | 15,359 | 784.9 |
-| i006 | 171,244 | 717.2 |
-| i007 | 58,612 | 725.5 |
-| i008 | 23,151 | 757.6 |
+| i001 | 11,676 | 758.7 |
+| i002 | 49,606 | 732.7 |
+| i003 | 99,641 | 717.7 |
+| i004 | 102,464 | 715.3 |
+| i005 | 15,489 | 780.2 |
+| i006 | 174,716 | 704.7 |
+| i007 | 59,403 | 717.3 |
+| i008 | 23,295 | 754.0 |
 
 ## Run
 
