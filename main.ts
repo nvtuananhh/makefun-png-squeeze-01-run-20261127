@@ -399,6 +399,7 @@ function filterChoices(samples, width, height, bpp) {
     brute: new Uint8Array(size),
   };
   const trial = Array.from({ length: 5 }, () => new Uint8Array(stride));
+  const bruteRow = new Uint8Array(stride + 1);
   const seen = new Uint32Array(65536);
   let stamp = 0;
   for (let y = 0; y < height; y++) {
@@ -427,30 +428,27 @@ function filterChoices(samples, width, height, bpp) {
     out.minsum.set(trial[bt], at + 1);
     out.pairs[at] = pt;
     out.pairs.set(trial[pt], at + 1);
-  }
-  // Brute force: each row's filter is the one whose level-4 deflate of the
-  // row (filter byte included) is shortest, with the last 32 KiB of the rows
-  // already chosen as its dictionary. The dictionary is the rows chosen so
-  // far, so this pass runs after the heuristics above.
-  const bruteRow = new Uint8Array(stride + 1);
-  for (let y = 0; y < height; y++) {
-    const cur = samples.subarray(y * stride, (y + 1) * stride);
-    const prev = y === 0 ? null : samples.subarray((y - 1) * stride, y * stride);
-    const at = y * (stride + 1);
+    // Brute force in the same pass, reusing the filtered rows just
+    // computed instead of filtering each row a second time: each row's
+    // filter is the one whose level-4 deflate of the row (filter byte
+    // included) is shortest, with the last 32 KiB of the rows already
+    // chosen as its dictionary. When the two heuristics already agree,
+    // the trials add nothing, so the agreed filter is kept directly.
     const before = out.brute.subarray(Math.max(0, at - 32768), at);
-    let bt = 0;
+    let bbt = bt;
     let bc = Infinity;
-    for (let t = 0; t < 5; t++) {
-      filterRow(t, cur, prev, bpp, trial[t]);
-      bruteRow[0] = t;
-      bruteRow.set(trial[t], 1);
-      const len = before.length === 0
-        ? deflateSync(bruteRow, { level: 4, memLevel: 9 }).length
-        : deflateSync(bruteRow, { level: 4, memLevel: 9, dictionary: before }).length;
-      if (len < bc) { bc = len; bt = t; }
+    if (bt !== pt) {
+      for (let t = 0; t < 5; t++) {
+        bruteRow[0] = t;
+        bruteRow.set(trial[t], 1);
+        const len = before.length === 0
+          ? deflateSync(bruteRow, { level: 4, memLevel: 9 }).length
+          : deflateSync(bruteRow, { level: 4, memLevel: 9, dictionary: before }).length;
+        if (len < bc) { bc = len; bbt = t; }
+      }
     }
-    out.brute[at] = bt;
-    out.brute.set(trial[bt], at + 1);
+    out.brute[at] = bbt;
+    out.brute.set(trial[bbt], at + 1);
   }
   return out;
 }
@@ -665,13 +663,13 @@ function costTablesFrom(litLens, distLens) {
 // reach only after hundreds of nearer candidates.
 function longestMatches(data, maxChain, extraDists) {
   const n = data.length;
-  const HSIZE = 1 << 15;
+  const HSIZE = 1 << 16;
   const head = new Int32Array(HSIZE).fill(-1);
   const prev = new Int32Array(n).fill(-1);
   const lens = new Uint16Array(n);
   const dists = new Int32Array(n);
-  for (let pos = 0; pos + 2 < n; pos++) {
-    const h = ((data[pos] << 10) ^ (data[pos + 1] << 5) ^ data[pos + 2]) & (HSIZE - 1);
+  for (let pos = 0; pos + 3 < n; pos++) {
+    const h = ((data[pos] << 8) ^ (data[pos + 1] << 4) ^ data[pos + 2] ^ (data[pos + 3] << 12)) & (HSIZE - 1);
     let cand = head[h];
     let bestLen = 2;
     let bestDist = 0;
@@ -689,9 +687,16 @@ function longestMatches(data, maxChain, extraDists) {
           if (l >= maxPossible) break;
         }
       }
+      // A match this long is already near the best the parser can use;
+      // walking the rest of the chain for a few more bytes costs more
+      // time than those bytes are worth.
+      if (bestLen >= 128) break;
       cand = prev[cand];
     }
-    if (extraDists) {
+    // The row-above tries only pay when the chain has not already found a
+    // long match: once one reaches 200 bytes the parser is fed either way,
+    // and the extra extension loops are pure overhead.
+    if (extraDists && bestLen < 200) {
       for (let k = 0; k < extraDists.length; k++) {
         const dd = extraDists[k];
         const c2 = pos - dd;
@@ -971,14 +976,17 @@ function emitBlocks(data, tok, ranges) {
 // pass's tokens imply), adaptive block splitting, and exact emission.
 function compressOptimal(data, pitch) {
   const small = data.length <= 1200000;
-  const maxChain = small ? 256 : 128;
+  // Large streams walk fewer chain candidates: the row-above tries below
+  // already cover the matches that matter most on big streams.
+  const maxChain = small ? 256 : 64;
   const extra = small
     ? [pitch, 2 * pitch, 3 * pitch, 4 * pitch]
     : [pitch, 2 * pitch];
   const { lens, dists } = longestMatches(data, maxChain, extra);
-  // Large streams keep improving as the cost model converges (the rich RGB
-  // instance still gains at five passes), while small ones plateau by two.
-  const iters = small ? 2 : 5;
+  // Two cost-model passes everywhere. Large streams still gain a little
+  // from further passes, but each extra pass costs seconds and the entry
+  // has a 60-second wall for the whole set, so two is the budget.
+  const iters = 2;
   let ct = costTablesFrom(FIXED_LIT_LENS, FIXED_DIST_LENS);
   let tok = dpParse(data, lens, dists, ct);
   for (let it = 1; it < iters; it++) {
